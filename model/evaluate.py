@@ -6,13 +6,7 @@ import model.utils as utils
 
 
 def calc_score(ner_model, dataset_loader, if_cuda):
-    """
-    calculate score for pre-selected metrics
 
-    args:
-        ner_model: LSTM-CRF model
-        dataset_loader: loader class for test set
-    """
     ner_model.eval()
     correct = 0
     total_act = 0
@@ -29,13 +23,7 @@ def calc_score(ner_model, dataset_loader, if_cuda):
     return acc
 
 def calc_f1_score(ner_model, dataset_loader, action2idx, if_cuda):
-    """
-    calculate score for pre-selected metrics
 
-    args:
-        ner_model: LSTM-CRF model
-        dataset_loader: loader class for test set
-    """
     idx2action = {v: k for k, v in action2idx.items()}
     ner_model.eval()
     correct = 0
@@ -44,16 +32,14 @@ def calc_f1_score(ner_model, dataset_loader, action2idx, if_cuda):
 
     total_entity_in_gold = 0
     total_entity_in_pre = 0
-    for feature, label, action in itertools.chain.from_iterable(dataset_loader):  # feature : torch.Size([4, 17])
+    for feature, label, action in itertools.chain.from_iterable(dataset_loader):  
         fea_v, tg_v, ac_v = utils.repack_vb(if_cuda, feature, label, action)
-        loss, pre_action, right_num = ner_model.forward(fea_v, ac_v)  # loss torch.Size([1, seq_len, action_size+1, action_size+1])
-        # print("real action", ac_v.squeeze(0).cpu().data.numpy())
-        # print("pre_action", pre_action)
+        loss, pre_action, right_num = ner_model.forward(fea_v, ac_v)
+
         num_entity_in_real, num_entity_in_pre, correct_entity = to_entity(ac_v.squeeze(0).data.tolist(), pre_action, idx2action)
         for idx in range(len(pre_action)):
             if pre_action[idx] == ac_v.squeeze(0).data[idx]:
                 correct += 1
-        # print(num_entity_in_real, num_entity_in_pre, correct_entity)
         total_act += len(pre_action)
         total_correct_entity += correct_entity
         total_entity_in_gold += num_entity_in_real

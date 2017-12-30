@@ -148,7 +148,7 @@ if __name__ == "__main__":
     if args.update == 'sgd':
         optimizer = optim.SGD(ner_model.parameters(), lr=args.lr, momentum=args.momentum)
     elif args.update == 'adam':
-        optimizer = optim.Adam(ner_model.parameters(), lr=args.lr)
+        optimizer = optim.Adam(ner_model.parameters(), lr=args.lr, betas=(0.9, 0.9))
 
     if args.load_check_point and args.load_opt:
         optimizer.load_state_dict(checkpoint_file['optimizer'])

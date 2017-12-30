@@ -1,9 +1,3 @@
-"""
-.. module:: lstm_crf
-    :synopsis: lstm_crf
-
-.. moduleauthor:: Liyuan Liu
-"""
 import logging
 import torch
 import torch.autograd as autograd
@@ -57,15 +51,24 @@ class StackRNN_2Layer(object):
             self.empty = p_empty_embedding
 
     def push(self, expr, extra=None):
+        self.dropout(self.layer1[-1][0][0])
         self.layer1.append((self.cell1(expr, self.layer1[-1][0]), extra))
-        self.dropout(self.layer1[-1][1][1])
         mid_h = self.get_output(self.layer1[-1][0])
-        self.layer2.append((self.cell2(mid_h.cuda(), self.layer2[-1][0]), extra))
-        self.dropout(self.layer2[-1][1][1])
+        self.dropout(self.layer2[-1][0][0])
+        self.layer2.append((self.cell2(mid_h, self.layer2[-1][0]), extra))
 
     def pop(self):
         layer1 = self.layer1.pop()[1]
         return self.layer2.pop()[1]
+
+    def back_to_init(self):
+        while self.__len__() > 0:
+            self.pop()
+
+    def clear(self):
+        self.layer1.reverse()
+        self.layer2.reverse()
+        self.back_to_init()
 
     def embedding(self):
         return self.get_output(self.layer2[-1][0]) if len(self.layer2) > 1 else self.empty
@@ -150,9 +153,7 @@ class TransitionNER(nn.Module):
         return valid_actions
 
     def rand_init_hidden(self):
-        """
-        random initialize hidden variable
-        """
+ 
         if self.gpu_triger is True:
             return autograd.Variable(
                 torch.randn(2 * self.rnn_layers, self.batch_size, self.hidden_dim // 2)).cuda(), autograd.Variable(
@@ -163,31 +164,19 @@ class TransitionNER(nn.Module):
                 torch.randn(2 * self.rnn_layers, self.batch_size, self.hidden_dim // 2))
 
     def set_seq_size(self, sentence):
-        """
-        set batch size and sequence length
-        """
+       
         tmp = sentence.size()
         self.seq_length = tmp[0]
         self.batch_size = 1
 
     def load_pretrained_embedding(self, pre_embeddings):
-        """
-        load pre-trained word embedding
 
-        args:
-            pre_word_embeddings (self.word_size, self.word_dim) : pre-trained embedding
-        """
         assert (pre_embeddings.size()[1] == self.embedding_dim)
         self.word_embeds.weight = nn.Parameter(pre_embeddings)
 
 
     def rand_init(self, init_word_embedding=False, init_action_embedding=True, init_relation_embedding=True):
-        """
-        random initialization
 
-        args:
-            init_embedding: random initialize embedding or not
-        """
         if init_word_embedding:
             utils.init_embedding(self.word_embeds.weight)
         if init_action_embedding:
