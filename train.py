@@ -146,7 +146,7 @@ if __name__ == "__main__":
         ner_model.rand_init(init_word_embedding=args.rand_embedding)
 
     if args.update == 'sgd':
-        optimizer = optim.SGD(ner_model.parameters(), lr=args.lr, momentum=args.momentum)
+        optimizer = optim.SGD(ner_model.parameters(), lr=args.lr, momentum=args.momentum, nesterov=True)
     elif args.update == 'adam':
         optimizer = optim.Adam(ner_model.parameters(), lr=args.lr, betas=(0.9, 0.9))
 
