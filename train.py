@@ -24,11 +24,11 @@ import functools
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Training transition-based NER system')
     parser.add_argument('--rand_embedding', action='store_true', help='random initialize word embedding')
-    parser.add_argument('--emb_file', default='./embedding/sskip.100.vectors',
+    parser.add_argument('--emb_file', default='../embedding/sskip.100.vectors',
                         help='path to pre-trained embedding')
-    parser.add_argument('--train_file', default='./data/conll2003/train.txt', help='path to training file')
-    parser.add_argument('--dev_file', default='./data/conll2003/dev.txt', help='path to development file')
-    parser.add_argument('--test_file', default='./data/conll2003/test.txt', help='path to test file')
+    parser.add_argument('--train_file', default='../data/conll2003/train.txt', help='path to training file')
+    parser.add_argument('--dev_file', default='../data/conll2003/dev.txt', help='path to development file')
+    parser.add_argument('--test_file', default='../data/conll2003/test.txt', help='path to test file')
     parser.add_argument('--gpu', type=int, default=0, help='gpu id, set to -1 if use cpu mode')
     parser.add_argument('--unk', default='unk', help='unknow-token in pre-trained embedding')
     parser.add_argument('--checkpoint', default='./checkpoint/ner_', help='path to checkpoint prefix')
@@ -124,9 +124,9 @@ if __name__ == "__main__":
 
     # construct dataset
     singleton = list(functools.reduce(lambda x, y: x & y, map(lambda t: set(t), [singleton, f_map])))
-    dataset = utils.construct_dataset(train_features, train_labels, train_actions, f_map, l_map, a_map, args.caseless)
-    dev_dataset = utils.construct_dataset(dev_features, dev_labels, dev_actions, f_map, l_map, a_map, args.caseless)
-    test_dataset = utils.construct_dataset(test_features, test_labels, test_actions, f_map, l_map, a_map, args.caseless)
+    dataset = utils.construct_dataset(train_features, train_labels, train_actions, f_map, l_map, a_map, singleton, args.singleton_rate, args.caseless)
+    dev_dataset = utils.construct_dataset(dev_features, dev_labels, dev_actions, f_map, l_map, a_map, singleton, args.singleton_rate, args.caseless)
+    test_dataset = utils.construct_dataset(test_features, test_labels, test_actions, f_map, l_map, a_map, singleton, args.singleton_rate, args.caseless)
 
     dataset_loader = [torch.utils.data.DataLoader(dataset, shuffle=True, drop_last=False)]
     dev_dataset_loader = [torch.utils.data.DataLoader(dev_dataset, shuffle=False, drop_last=False)]
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     # build model
     print('building model')
     ner_model = TransitionNER(a_map, f_map, l_map, char_map, ner_map, len(f_map), len(a_map), args.embedding_dim, args.action_embedding_dim, args.char_embedding_dim, args.hidden, args.char_hidden, args.layers, args.drop_out,
-                         singleton, args.singleton_rate, args.spelling, args.char_structure, is_cuda=args.gpu)
+                         args.spelling, args.char_structure, is_cuda=args.gpu)
 
     if args.load_check_point:
         ner_model.load_state_dict(checkpoint_file['state_dict'])
@@ -181,7 +181,7 @@ if __name__ == "__main__":
 
             fea_v, la_v, ac_v = utils.repack_vb(if_cuda, feature, label, action)
             ner_model.zero_grad()  # zeroes the gradient of all parameters
-            loss, _, _ = ner_model.forward(fea_v,la_v, ac_v)
+            loss, _, _ = ner_model.forward(fea_v, ac_v)
             loss.backward()
             nn.utils.clip_grad_norm(ner_model.parameters(), args.clip_grad)
             optimizer.step()

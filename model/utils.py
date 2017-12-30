@@ -8,13 +8,7 @@ from torch.utils.data import Dataset
 
 
 class TransitionDataset(Dataset):
-    """Dataset Class for word-level model
 
-    args:
-        data_tensor (ins_num, seq_length): words
-        label_tensor (ins_num, seq_length): labels
-        mask_tensor (ins_num, seq_length): padding masks
-    """
     def __init__(self, data_tensor, label_tensor, action_tensor):
 
         # print(data_tensor.size, label_tensor.size, action_tensor.size)
@@ -47,28 +41,18 @@ def init_varaible_zero(gpu, *size):
     return varible(torch.zeros(*size),gpu)
 
 def to_scalar(var):
-    """change the first element of a tensor to scalar
-    """
+
     return var.view(-1).data.tolist()[0]
 
 
 def argmax(vec):
-    """helper function to calculate argmax of input vector at dimension 1
-    """
+
     _, idx = torch.max(vec, 1)
     return to_scalar(idx)
 
 
 def log_sum_exp(vec, m_size):
-    """
-    calculate log of exp sum
 
-    args:
-        vec (batch_size, vanishing_dim, hidden_dim) : input tensor
-        m_size : hidden_dim
-    return:
-        batch_size, hidden_dim
-    """
     _, idx = torch.max(vec, 1)  # B * 1 * M
     max_score = torch.gather(vec, 1, idx.view(-1, 1, m_size)).view(-1, 1, m_size)  # B * M
       
@@ -76,41 +60,34 @@ def log_sum_exp(vec, m_size):
 
 
 def encode2char_safe(input_lines, char_dict):
-    """
-    get char representation of lines
 
-    args:
-        input_lines (list of strings) : input corpus
-        char_dict (dictionary) : char-level dictionary
-    return:
-        forw_lines
-    """
     unk = char_dict['<u>']
     forw_lines = [list(map(lambda m: list(map(lambda t: char_dict.get(t, unk), m)), line)) for line in input_lines]
     return forw_lines
 
 
-def encode_safe(input_lines, word_dict, unk):
-    """
-    encode list of strings into word-level representation with unk (word to idx)
-    t <class 'list'>: ['EU', 'rejects', 'German', 'call', 'to', 'boycott', 'British', 'lamb', '.']
-    m 'call'
-    """
-    lines = list(map(lambda t: list(map(lambda m: word_dict.get(m, unk), t)), input_lines))
+def encode_safe(input_lines, word_dict, unk, singleton, singleton_rate):
+    lines = list()
+    for sentence in input_lines:
+        line = list()
+        for word in sentence:
+            if word in singleton and torch.rand(1).numpy()[0] < singleton_rate:
+                line.append(unk)
+            elif word in word_dict:
+                line.append(word_dict[word])
+            else:
+                line.append(unk)
+        lines.append(line)
     return lines
 
 
 def encode(input_lines, word_dict):
-    """
-    encode list of strings into word-level representation
-    """
+
     lines = list(map(lambda t: list(map(lambda m: word_dict[m], t)), input_lines))
     return lines
 
 def shrink_features(feature_map, features, thresholds):
-    """
-    filter un-common features by threshold
-    """
+
     feature_count = {k: 0 for (k, v) in iter(feature_map.items())}
     for feature_list in features:
         for feature in feature_list:
@@ -125,15 +102,7 @@ def shrink_features(feature_map, features, thresholds):
     return feature_map
 
 def generate_corpus(lines: object, word_count, if_shrink_feature: object = False, thresholds: object = 1) -> object:
-    """
-    generate label, feature, word dictionary and label dictionary
 
-    args:
-        lines : corpus
-        if_shrink_feature: whether shrink word-dictionary
-        threshold: threshold for shrinking word-dictionary
-        
-    """
     feature_map = dict()
     char_map = {"<start>": 0, "<end>": 1}
     label_map = dict()
@@ -277,9 +246,7 @@ def read_corpus_ner(lines, word_count):
 
 
 def shrink_embedding(feature_map, word_dict, word_embedding, caseless):
-    """
-    shrink embedding dictionary to in-doc words only
-    """
+
     if caseless:
         feature_map = set([k.lower() for k in feature_map.keys()])
     new_word_list = [k for k in word_dict.keys() if (k in feature_map)]
@@ -289,20 +256,7 @@ def shrink_embedding(feature_map, word_dict, word_embedding, caseless):
     return new_word_dict, new_embedding
 
 def load_embedding_wlm(emb_file, delimiter, feature_map, full_feature_set, caseless, unk, emb_len, shrink_to_train=False, shrink_to_corpus=False):
-    """
-    load embedding, indoc words would be listed before outdoc words
-    LOAD EMBEDDING FOR CHARACTERS IN train.txt
-    args: 
-        emb_file: path to embedding file
-        delimiter: delimiter of lines
-        feature_map: word dictionary
-        full_feature_set: all words in the corpus
-        caseless: convert into casesless style
-        unk: string for unknown token
-        emb_len: dimension of embedding vectors
-        shrink_to_train: whether to shrink out-of-training set or not
-        shrink_to_corpus: whether to shrink out-of-corpus or not
-    """
+
     if caseless:
         feature_set = set([key.lower() for key in feature_map])
         full_feature_set = set([key.lower() for key in full_feature_set])
@@ -364,19 +318,14 @@ def load_embedding_wlm(emb_file, delimiter, feature_map, full_feature_set, casel
     return word_dict, embedding_tensor
 
 
-def construct_dataset(input_features, input_label, input_action, word_dict, label_dict, action_dict, caseless):
-    """
-     utils.construct_bucket_mean_vb(train_features, train_labels, f_map, l_map, args.caseless)
-    Construct bucket by mean for viterbi decode, word-level only
-    """
-    # encode and padding
+
+def construct_dataset(input_features, input_label, input_action, word_dict, label_dict, action_dict, singleton, singleton_rate, caseless):
+
     if caseless:
         input_features = list(map(lambda t: list(map(lambda x: x, t)), input_features))
-    features = encode_safe(input_features, word_dict, word_dict['<unk>'])
+    features = encode_safe(input_features, word_dict, word_dict['<unk>'], singleton, singleton_rate,)
     labels = encode(input_label, label_dict)
     actions = encode(input_action, action_dict)
-    # labels = list(map(lambda t: [label_dict['<start>']] + list(t), labels))
-    # actions = list(map(lambda t: [action_dict['<start>']] + list(t), actions))
     feature_tensor = []
     label_tensor = []
     action_tensor =[]
@@ -390,40 +339,30 @@ def construct_dataset(input_features, input_label, input_action, word_dict, labe
     return dataset
 
 def save_checkpoint(state, track_list, filename):
-    """
-    save checkpoint
-    """
+
     with open(filename+'.json', 'w') as f:
         json.dump(track_list, f)
     torch.save(state, filename+'.model')
 
 def adjust_learning_rate(optimizer, lr):
-    """
-    shrink learning rate for pytorch
-    """
+
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
 def init_embedding(input_embedding):
-    """
-    Initialize embedding
-    """
+
     bias = np.sqrt(3.0 / input_embedding.size(1))
     nn.init.uniform(input_embedding, -bias, bias)
 
 def init_linear(input_linear):
-    """
-    Initialize linear transformation
-    """
+
     bias = np.sqrt(6.0 / (input_linear.weight.size(0) + input_linear.weight.size(1)))
     nn.init.uniform(input_linear.weight, -bias, bias)
     if input_linear.bias is not None:
         input_linear.bias.data.zero_()
 
 def init_lstm(input_lstm):
-    """
-    Initialize lstm
-    """
+
     for ind in range(0, input_lstm.num_layers):
         weight = eval('input_lstm.weight_ih_l'+str(ind))
         bias = np.sqrt(6.0 / (weight.size(0)/4 + weight.size(1)))
@@ -443,9 +382,7 @@ def init_lstm(input_lstm):
 
 
 def init_lstm_cell(input_lstm):
-    """
-    Initialize lstm
-    """
+
     weight = eval('input_lstm.weight_ih')
     bias = np.sqrt(6.0 / (weight.size(0) / 4 + weight.size(1)))
     nn.init.uniform(weight, -bias, bias)
@@ -462,15 +399,6 @@ def init_lstm_cell(input_lstm):
         weight.data[input_lstm.hidden_size: 2 * input_lstm.hidden_size] = 1
 
 def repack_vb(if_cuda, feature, label, action):
-    """packer for viterbi loss
-
-    args:
-        feature (Seq_len, Batch_size): input feature
-        target (Seq_len, Batch_size): output target
-        action (Seq_len, Batch_size): padding action
-    return:
-        feature (Seq_len, Batch_size), target (Seq_len, Batch_size), action (Seq_len, Batch_size)
-    """
 
     if if_cuda:
         fea_v = torch.autograd.Variable(feature).cuda()  # feature: torch.Size([4, 17]) fea_v: torch.Size([17, 4])

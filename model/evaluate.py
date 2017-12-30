@@ -46,7 +46,7 @@ def calc_f1_score(ner_model, dataset_loader, action2idx, if_cuda):
     total_entity_in_pre = 0
     for feature, label, action in itertools.chain.from_iterable(dataset_loader):  # feature : torch.Size([4, 17])
         fea_v, tg_v, ac_v = utils.repack_vb(if_cuda, feature, label, action)
-        loss, pre_action, right_num = ner_model.forward(fea_v, tg_v, ac_v)  # loss torch.Size([1, seq_len, action_size+1, action_size+1])
+        loss, pre_action, right_num = ner_model.forward(fea_v, ac_v)  # loss torch.Size([1, seq_len, action_size+1, action_size+1])
         # print("real action", ac_v.squeeze(0).cpu().data.numpy())
         # print("pre_action", pre_action)
         num_entity_in_real, num_entity_in_pre, correct_entity = to_entity(ac_v.squeeze(0).data.tolist(), pre_action, idx2action)
