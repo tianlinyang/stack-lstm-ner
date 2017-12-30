@@ -184,8 +184,15 @@ class TransitionNER(nn.Module):
         if init_relation_embedding:
             utils.init_embedding(self.relation_embeds.weight)
 
+        if self.use_spelling:
+            utils.init_embedding(self.char_embeds.weight)
         if self.use_spelling and self.char_structure == 'lstm':
             utils.init_lstm(self.char_bi_lstm)
+            
+        utils.init_linear(self.lstms_output_2_softmax)
+        utils.init_linear(self.output_2_act)
+        utils.init_linear(self.entity_2_output)
+        
         utils.init_lstm_cell(self.buffer_lstm)
         utils.init_lstm_cell(self.action_lstm)
         utils.init_lstm_cell(self.stack_lstm)

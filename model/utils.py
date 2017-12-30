@@ -11,8 +11,6 @@ class TransitionDataset(Dataset):
 
     def __init__(self, data_tensor, label_tensor, action_tensor):
 
-        # print(data_tensor.size, label_tensor.size, action_tensor.size)
-        # assert data_tensor.size(0) == label_tensor.size(0)
         self.data_tensor = data_tensor
         self.label_tensor = label_tensor
         self.action_tensor = action_tensor
@@ -401,9 +399,9 @@ def init_lstm_cell(input_lstm):
 def repack_vb(if_cuda, feature, label, action):
 
     if if_cuda:
-        fea_v = torch.autograd.Variable(feature).cuda()  # feature: torch.Size([4, 17]) fea_v: torch.Size([17, 4])
-        label_v = torch.autograd.Variable(label).cuda()  # torch.Size([17, 4, 1])
-        action_v = torch.autograd.Variable(action).cuda()  # torch.Size([17, 4])
+        fea_v = torch.autograd.Variable(feature).cuda()  
+        label_v = torch.autograd.Variable(label).cuda() 
+        action_v = torch.autograd.Variable(action).cuda()  
     else:
         fea_v = torch.autograd.Variable(feature)
         label_v = torch.autograd.Variable(label).contiguous()
