@@ -61,6 +61,7 @@ def calc_f1_score(ner_model, dataset_loader, action2idx, if_cuda):
     return f1, pre, rec, acc
 
 def to_entity(real_action, predict_action, idx2action):
+
     flags = [False, False]
     entitys = [[],[]]
     actions = [real_action, predict_action]
@@ -76,4 +77,42 @@ def to_entity(real_action, predict_action, idx2action):
                 ner_start_pos = -1
     correct_entity = set(entitys[0]) & set(entitys[1])
     return len(entitys[0]), len(entitys[1]), len(correct_entity)
+
+def generate_ner(ner_model, fileout, dataset_loader, action2idx, word2idx, if_cuda):
+
+    idx2action = {v: k for k, v in action2idx.items()}
+    idx2word = {v: k for k, v in word2idx.items()}
+    ner_model.eval()
+
+    for feature in itertools.chain.from_iterable(dataset_loader):  # feature : torch.Size([4, 17])
+        fe_v = utils.varible(feature, if_cuda)
+        _, pre_action, _ = ner_model.forward(fe_v)
+        feature_seq = [idx2word[w_idx] for w_idx in fe_v.squeeze(0).data.tolist()]
+        entitys = []
+        ner_start_pos = -1
+        word_start = -1
+        word_idx = 0
+        for ac_idx in range(len(pre_action)):
+            if idx2action[pre_action[ac_idx]].startswith('S') and ner_start_pos < 0:
+                ner_start_pos = ac_idx
+                word_start = word_idx
+                word_idx += 1
+            elif idx2action[pre_action[ac_idx]].startswith('O') and ner_start_pos >= 0:
+                ner_start_pos = -1
+                word_idx += 1
+            elif idx2action[pre_action[ac_idx]].startswith('R') and ner_start_pos >= 0:
+                ent = []
+                ent.append(" ".join(feature_seq[word_start:word_idx]))
+                ent.append([ner_start_pos, ac_idx-1])
+                ent.append(idx2action[pre_action[ac_idx]].split('-')[1])
+                entitys.append(ent)
+                ner_start_pos = -1
+            else:
+                word_idx += 1
+
+        fileout.write("%s\nEntities: " % (" ".join(feature_seq)))
+        for i in range(len(entitys)):
+            fileout.write("%s-%s " %(entitys[i][0], entitys[i][2]))
+        fileout.write("\n\n")
+
 

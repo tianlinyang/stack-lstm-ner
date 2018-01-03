@@ -80,10 +80,11 @@ class StackRNN_2Layer(object):
 
 class TransitionNER(nn.Module):
 
-    def __init__(self,  action2idx, word2idx, label2idx, char2idx, ner_map, vocab_size, action_size, embedding_dim, action_embedding_dim, char_embedding_dim,
+    def __init__(self, mode, action2idx, word2idx, label2idx, char2idx, ner_map, vocab_size, action_size, embedding_dim, action_embedding_dim, char_embedding_dim,
                  hidden_dim, char_hidden_dim, rnn_layers, dropout_ratio, use_spelling, char_structure, is_cuda):
         super(TransitionNER, self).__init__()
         self.embedding_dim = embedding_dim
+        self.mode = mode
         self.hidden_dim = hidden_dim
         self.vocab_size = vocab_size
         self.action2idx = action2idx
@@ -200,14 +201,15 @@ class TransitionNER(nn.Module):
         utils.init_lstm_cell(self.entity_forward_lstm)
         utils.init_lstm_cell(self.entity_backward_lstm)
 
-    def forward(self, sentence, actions, hidden=None):
+    def forward(self, sentence, actions=None, hidden=None):
 
         sentence = sentence.squeeze(0)
-        actions = actions.squeeze(0)
         self.set_seq_size(sentence)
         word_embeds = self.dropout_e(self.word_embeds(sentence))
-        action_embeds = self.dropout_e(self.action_embeds(actions))
-        relation_embeds = self.dropout_e(self.relation_embeds(actions))
+        if self.mode == 'train':
+            actions = actions.squeeze(0)
+            action_embeds = self.dropout_e(self.action_embeds(actions))
+            relation_embeds = self.dropout_e(self.relation_embeds(actions))
         action_count = 0
 
         lstm_initial = (utils.xavier_init(self.gpu_triger, 1, self.hidden_dim), utils.xavier_init(self.gpu_triger, 1, self.hidden_dim))
@@ -273,14 +275,24 @@ class TransitionNER(nn.Module):
                 action_idx = torch.max(log_probs.cpu(), 0)[1][0].data.numpy()[0]
                 action_predict = valid_actions[action_idx]
                 pre_actions.append(action_predict)
-                if log_probs is not None:
-                    losses.append(log_probs[valid_action_tbl[actions.data[action_count]]])
+                if self.mode == 'train':
+                    if log_probs is not None:
+                        losses.append(log_probs[valid_action_tbl[actions.data[action_count]]])
 
-            real_action = self.idx2action[actions.data[action_count]]
+            if self.mode == 'train':
+                real_action = self.idx2action[actions.data[action_count]]
+                act_embedding = action_embeds[action_count].unsqueeze(0)
+                rel_embedding = relation_embeds[action_count].unsqueeze(0)
+            elif self.mode == 'predict':
+                real_action = self.idx2action[action_predict]
+                action_predict_tensor = utils.varible(torch.from_numpy(np.array([action_predict])), self.gpu_triger)
+                action_embeds = self.dropout_e(self.action_embeds(action_predict_tensor))
+                relation_embeds = self.dropout_e(self.relation_embeds(action_predict_tensor))
+                act_embedding = action_embeds[0].unsqueeze(0)
+                rel_embedding = relation_embeds[0].unsqueeze(0)
+
             if real_action == self.idx2action[action_predict]:
                 right += 1
-            act_embedding = action_embeds[action_count].unsqueeze(0)
-            rel_embedding = relation_embeds[action_count].unsqueeze(0)
             action.push(act_embedding,(act_embedding, real_action))
             if real_action.startswith('S'):
                 assert len(buffer) > 0
@@ -316,6 +328,11 @@ class TransitionNER(nn.Module):
                 output.push(output_input, (entity_input, ent))
             action_count += 1
 
-        loss = -torch.sum(torch.cat(losses))
+        if len(losses) > 0:
+            loss = -torch.sum(torch.cat(losses))
+        else:
+            loss = -1
 
         return loss, pre_actions, right if len(losses) > 0 else None
+
+    # def forward_batch(self, sentences, actions, hidden=None):

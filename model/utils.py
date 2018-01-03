@@ -6,6 +6,16 @@ import torch.nn as nn
 import torch.nn.init
 from torch.utils.data import Dataset
 
+class TransitionDataset_P(Dataset):
+
+    def __init__(self, data_tensor):
+        self.data_tensor = data_tensor
+
+    def __getitem__(self, index):
+        return self.data_tensor[index]
+
+    def __len__(self):
+        return len(self.data_tensor)
 
 class TransitionDataset(Dataset):
 
@@ -78,6 +88,9 @@ def encode_safe(input_lines, word_dict, unk, singleton, singleton_rate):
         lines.append(line)
     return lines
 
+def encode_safe_predict(input_lines, word_dict, unk):
+    lines = list(map(lambda t: list(map(lambda m: word_dict.get(m, unk), t)), input_lines))
+    return lines
 
 def encode(input_lines, word_dict):
 
@@ -242,6 +255,15 @@ def read_corpus_ner(lines, word_count):
 
     return features, labels, actions, word_count
 
+def read_corpus_predict(lines):
+    features = list()
+    for line in lines:
+        line = line.rstrip('\n').split()
+        features.append(line)
+
+    return features
+
+
 
 def shrink_embedding(feature_map, word_dict, word_embedding, caseless):
 
@@ -321,7 +343,7 @@ def construct_dataset(input_features, input_label, input_action, word_dict, labe
 
     if caseless:
         input_features = list(map(lambda t: list(map(lambda x: x, t)), input_features))
-    features = encode_safe(input_features, word_dict, word_dict['<unk>'], singleton, singleton_rate,)
+    features = encode_safe(input_features, word_dict, word_dict['<unk>'], singleton, singleton_rate)
     labels = encode(input_label, label_dict)
     actions = encode(input_action, action_dict)
     feature_tensor = []
@@ -335,6 +357,18 @@ def construct_dataset(input_features, input_label, input_action, word_dict, labe
     dataset = TransitionDataset(feature_tensor, label_tensor, action_tensor)
 
     return dataset
+
+def construct_dataset_predict(input_features, word_dict, caseless):
+    if caseless:
+        input_features = list(map(lambda t: list(map(lambda x: x, t)), input_features))
+    features = encode_safe_predict(input_features, word_dict, word_dict['<unk>'])
+    feature_tensor = []
+    for feature in features:
+        feature_tensor.append(torch.LongTensor(feature))
+    dataset = TransitionDataset_P(feature_tensor)
+
+    return dataset
+
 
 def save_checkpoint(state, track_list, filename):
 
