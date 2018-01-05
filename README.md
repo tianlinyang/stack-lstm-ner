@@ -72,8 +72,8 @@ When models are only trained on the CoNLL 2003 English NER dataset, the results 
 | | pretrain + dropout | 87.96 | 
 | | pretrain + dropout + char | 90.33 | 
 | Our Implementation | pretrain + dropout | 90.43 | |
-| |  pretrain + dropout + char (BiLSTM) | | |
-| |  pretrain + dropout + char (CNN) |  | |
+| |  pretrain + dropout + char (BiLSTM) | 91.09 | |
+| |  pretrain + dropout + char (CNN) | 90.97 | |
 
 ### Author
  Huimeng Zhang: zhang_huimeng@foxmail.com

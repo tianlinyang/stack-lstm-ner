@@ -111,9 +111,11 @@ class TransitionNER(nn.Module):
             if self.char_structure == 'lstm':
                 self.tok_embedding_dim = self.embedding_dim + char_hidden_dim*2
                 self.unk_char_embeds = nn.Parameter(torch.randn(1, char_hidden_dim * 2), requires_grad=True)
+                self.pad_char_embeds = nn.Parameter(torch.zeros(1, char_hidden_dim * 2))
                 self.char_bi_lstm = nn.LSTM(char_embedding_dim, char_hidden_dim, num_layers=rnn_layers, bidirectional=True, dropout=dropout_ratio)
             elif self.char_structure == 'cnn':
                 self.tok_embedding_dim = self.embedding_dim + char_hidden_dim
+                self.pad_char_embeds = nn.Parameter(torch.zeros(1, char_hidden_dim ))
                 self.unk_char_embeds = nn.Parameter(torch.randn(1, char_hidden_dim), requires_grad=True)
                 self.conv1d = nn.Conv1d(char_embedding_dim, char_hidden_dim, 3, padding=2)
         else:
@@ -125,11 +127,15 @@ class TransitionNER(nn.Module):
         self.output_lstm = nn.LSTMCell(self.tok_embedding_dim, hidden_dim)
         self.entity_forward_lstm = nn.LSTMCell(self.tok_embedding_dim, hidden_dim)
         self.entity_backward_lstm = nn.LSTMCell(self.tok_embedding_dim, hidden_dim)
+
+        self.lstm = nn.LSTM(self.tok_embedding_dim, hidden_dim, num_layers=rnn_layers, bidirectional=False,
+                                    dropout=dropout_ratio)
         self.rnn_layers = rnn_layers
 
         self.dropout_e = nn.Dropout(p=dropout_ratio)
         self.dropout = nn.Dropout(p=dropout_ratio)
 
+        self.init_buffer = utils.xavier_init(self.gpu_triger,1,hidden_dim)
         self.empty_emb = nn.Parameter(torch.randn(1, hidden_dim))
         self.lstms_output_2_softmax = nn.Linear(hidden_dim * 4, hidden_dim)
         self.output_2_act = nn.Linear(hidden_dim, len(ner_map)+2)
@@ -154,7 +160,7 @@ class TransitionNER(nn.Module):
         return valid_actions
 
     def rand_init_hidden(self):
- 
+
         if self.gpu_triger is True:
             return autograd.Variable(
                 torch.randn(2 * self.rnn_layers, self.batch_size, self.hidden_dim // 2)).cuda(), autograd.Variable(
@@ -165,10 +171,16 @@ class TransitionNER(nn.Module):
                 torch.randn(2 * self.rnn_layers, self.batch_size, self.hidden_dim // 2))
 
     def set_seq_size(self, sentence):
-       
+
         tmp = sentence.size()
         self.seq_length = tmp[0]
         self.batch_size = 1
+
+    def set_batch_seq_size(self, sentence):
+
+        tmp = sentence.size()
+        self.seq_length = tmp[1]
+        self.batch_size = tmp[0]
 
     def load_pretrained_embedding(self, pre_embeddings):
 
@@ -194,6 +206,7 @@ class TransitionNER(nn.Module):
         utils.init_linear(self.output_2_act)
         utils.init_linear(self.entity_2_output)
         
+        utils.init_lstm(self.lstm)
         utils.init_lstm_cell(self.buffer_lstm)
         utils.init_lstm_cell(self.action_lstm)
         utils.init_lstm_cell(self.stack_lstm)
@@ -335,4 +348,158 @@ class TransitionNER(nn.Module):
 
         return loss, pre_actions, right if len(losses) > 0 else None
 
-    # def forward_batch(self, sentences, actions, hidden=None):
+    def forward_batch(self, sentences, actions=None, hidden=None):
+
+        self.set_batch_seq_size(sentences) #sentences [batch_size, max_len]
+        word_embeds = self.dropout_e(self.word_embeds(sentences)) #[batch_size, max_len, embeddind_size]
+        if self.mode == 'train':
+            action_embeds = self.dropout_e(self.action_embeds(actions))
+            relation_embeds = self.dropout_e(self.relation_embeds(actions))
+
+
+        lstm_initial = (utils.xavier_init(self.gpu_triger, 1, self.hidden_dim), utils.xavier_init(self.gpu_triger, 1, self.hidden_dim))
+        buffer = [[] for i in range(self.batch_size)]
+        losses = [[] for i in range(self.batch_size)]
+        right = [0 for i in range(self.batch_size)]
+        predict_actions = [[] for i in range(self.batch_size)]
+        stack = [StackRNN(self.stack_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
+        action = [StackRNN(self.action_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
+        output = [StackRNN(self.output_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
+        ent_f = [StackRNN(self.entity_forward_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
+        ent_b = [StackRNN(self.entity_backward_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
+        sentence_array = sentences.data.cpu().numpy()
+        sents_len = []
+        token_embedds = None
+        for sent_idx in range(len(sentence_array)):
+            count_words = 0
+            token_embedding = None
+            for word_idx in reversed(range(len(sentence_array[sent_idx]))):
+                if self.use_spelling:
+                    if sentence_array[sent_idx][word_idx] == 1 :
+                        tok_rep = torch.cat([word_embeds[sent_idx][word_idx].unsqueeze(0), self.pad_char_embeds], 1)
+                    elif sentence_array[sent_idx][word_idx] == 0 :
+                        count_words += 1
+                        tok_rep = torch.cat([word_embeds[sent_idx][word_idx].unsqueeze(0), self.unk_char_embeds], 1)
+                    else:
+                        count_words += 1
+                        word = sentence_array[sent_idx][word_idx]
+                        chars_in_word = [self.char2idx[char] for char in self.idx2word[word]]
+                        chars_Tensor = utils.varible(torch.from_numpy(np.array(chars_in_word)), self.gpu_triger)
+                        chars_embeds = self.dropout_e(self.char_embeds(chars_Tensor))
+                        if self.char_structure == 'lstm':
+                            char_o, hidden = self.char_bi_lstm(chars_embeds.unsqueeze(1), hidden)
+                            char_out = torch.chunk(hidden[0].squeeze(1), 2, 0)
+                            tok_rep = torch.cat([word_embeds[sent_idx][word_idx].unsqueeze(0), char_out[0], char_out[1]], 1)
+                        elif self.char_structure == 'cnn':
+                            char = chars_embeds.unsqueeze(0)
+                            char = char.transpose(1, 2)
+                            char, _ = self.conv1d(char).max(dim=2)
+                            char = torch.tanh(char)
+                            tok_rep = torch.cat([word_embeds[sent_idx][word_idx].unsqueeze(0), char], 1)
+                else:
+                    if sentence_array[sent_idx][word_idx] != 1:
+                        count_words += 1
+                    tok_rep = word_embeds[sent_idx][word_idx].unsqueeze(0)
+                if token_embedding is None:
+                    token_embedding = tok_rep
+                else:
+                    token_embedding = torch.cat([token_embedding, tok_rep], 0)
+
+            sents_len.append(count_words)
+            if token_embedds is None:
+                token_embedds = token_embedding.unsqueeze(0)
+            else:
+                token_embedds = torch.cat([token_embedds, token_embedding.unsqueeze(0)], 0)
+
+        tokens = token_embedds.transpose(0, 1)
+        tok_output, hidden = self.lstm(tokens)  #[max_len, batch_size, hidden_dim]
+        tok_output = tok_output.transpose(0, 1)
+
+        for idx in range(tok_output.size(0)):
+            emd_idx =sents_len[idx]-1
+            buffer[idx].append([self.init_buffer])
+            for word_idx in range(tok_output.size(1)-sents_len[idx], tok_output.size(1)):
+                buffer[idx].append([tok_output[idx][word_idx].unsqueeze(0), token_embedds[idx][word_idx].unsqueeze(0), self.idx2word[sentence_array[idx][emd_idx]]])
+                emd_idx -= 1
+
+        for batch_idx in range(self.batch_size):
+
+            action_count = 0
+            while len(buffer[batch_idx]) > 1 or len(stack[batch_idx]) > 0:
+                valid_actions = self.get_possible_actions(stack[batch_idx], buffer[batch_idx])
+                log_probs = None
+                if len(valid_actions) > 1:
+
+                    lstms_output = torch.cat(
+                        [buffer[batch_idx][-1][0], stack[batch_idx].embedding(), output[batch_idx].embedding(), action[batch_idx].embedding()], 1)
+                    hidden_output = torch.tanh(self.lstms_output_2_softmax(self.dropout(lstms_output)))
+                    if self.gpu_triger is True:
+                        logits = self.output_2_act(hidden_output)[0][
+                            torch.autograd.Variable(torch.LongTensor(valid_actions)).cuda()]
+                    else:
+                        logits = self.output_2_act(hidden_output)[0][
+                            torch.autograd.Variable(torch.LongTensor(valid_actions))]
+                    valid_action_tbl = {a: i for i, a in enumerate(valid_actions)}
+                    log_probs = torch.nn.functional.log_softmax(logits)
+                    action_idx = torch.max(log_probs.cpu(), 0)[1][0].data.numpy()[0]
+                    action_predict = valid_actions[action_idx]
+                    predict_actions[batch_idx].append(action_predict)
+                    if self.mode == 'train':
+                        if log_probs is not None:
+                            losses[batch_idx].append(log_probs[valid_action_tbl[actions.data[batch_idx][action_count]]])
+
+                if self.mode == 'train':
+                    real_action = self.idx2action[actions.data[batch_idx][action_count]]
+                    act_embedding = action_embeds[batch_idx][action_count].unsqueeze(0)
+                    rel_embedding = relation_embeds[batch_idx][action_count].unsqueeze(0)
+                elif self.mode == 'predict':
+                    real_action = self.idx2action[action_predict]
+                    action_predict_tensor = utils.varible(torch.from_numpy(np.array([action_predict])), self.gpu_triger)
+                    action_embeds = self.dropout_e(self.action_embeds(action_predict_tensor))
+                    relation_embeds = self.dropout_e(self.relation_embeds(action_predict_tensor))
+                    act_embedding = action_embeds[0].unsqueeze(0)
+                    rel_embedding = relation_embeds[0].unsqueeze(0)
+
+                if real_action == self.idx2action[action_predict]:
+                    right[batch_idx] += 1
+                action[batch_idx].push(act_embedding, (act_embedding, real_action))
+                if real_action.startswith('S'):
+                    assert len(buffer[batch_idx]) > 0
+                    _, tok_buffer_embedding, buffer_token = buffer[batch_idx].pop()
+                    stack[batch_idx].push(tok_buffer_embedding, (tok_buffer_embedding, buffer_token))
+                elif real_action.startswith('O'):
+                    assert len(buffer[batch_idx]) > 0
+                    _, tok_buffer_embedding, buffer_token = buffer[batch_idx].pop()
+                    output[batch_idx].push(tok_buffer_embedding, (tok_buffer_embedding, buffer_token))
+                elif real_action.startswith('R'):
+                    ent = ''
+                    entity = []
+                    assert len(stack[batch_idx]) > 0
+                    while len(stack[batch_idx]) > 0:
+                        tok_stack_embedding, stack_token = stack[batch_idx].pop()
+                        entity.append([tok_stack_embedding, stack_token])
+                    if len(entity) > 1:
+
+                        for i in range(len(entity)):
+                            ent_f[batch_idx].push(entity[i][0], (entity[i][0], entity[i][1]))
+                            ent_b[batch_idx].push(entity[len(entity) - i - 1][0],
+                                       (entity[len(entity) - i - 1][0], entity[len(entity) - i - 1][1]))
+                            ent += entity[i][1]
+                            ent += ' '
+                        entity_input = self.dropout(torch.cat([ent_b[batch_idx].embedding(), ent_f[batch_idx].embedding()], 1))
+                    else:
+                        ent_f[batch_idx].push(entity[0][0], (entity[0][0], entity[0][1]))
+                        ent_b[batch_idx].push(entity[0][0], (entity[0][0], entity[0][1]))
+                        ent = entity[0][1]
+                        entity_input = self.dropout(torch.cat([ent_f[batch_idx].embedding(), ent_b[batch_idx].embedding()], 1))
+                    ent_f[batch_idx].clear()
+                    ent_b[batch_idx].clear()
+                    output_input = self.entity_2_output(torch.cat([entity_input, rel_embedding], 1))
+                    output[batch_idx].push(output_input, (entity_input, ent))
+                action_count += 1
+
+        loss = 0
+        for idx in range(self.batch_size):
+            loss += -torch.sum(torch.cat(losses[idx]))
+
+        return loss, predict_actions, right if len(losses) > 0 else None

@@ -32,18 +32,19 @@ def calc_f1_score(ner_model, dataset_loader, action2idx, if_cuda):
 
     total_entity_in_gold = 0
     total_entity_in_pre = 0
-    for feature, label, action in itertools.chain.from_iterable(dataset_loader):  
+    for feature, label, action in itertools.chain.from_iterable(dataset_loader):  # feature : torch.Size([4, 17])
         fea_v, tg_v, ac_v = utils.repack_vb(if_cuda, feature, label, action)
-        loss, pre_action, right_num = ner_model.forward(fea_v, ac_v)
-
-        num_entity_in_real, num_entity_in_pre, correct_entity = to_entity(ac_v.squeeze(0).data.tolist(), pre_action, idx2action)
-        for idx in range(len(pre_action)):
-            if pre_action[idx] == ac_v.squeeze(0).data[idx]:
-                correct += 1
-        total_act += len(pre_action)
-        total_correct_entity += correct_entity
-        total_entity_in_gold += num_entity_in_real
-        total_entity_in_pre += num_entity_in_pre
+        # loss, pre_action, right_num = ner_model.forward(fea_v, ac_v)  # loss torch.Size([1, seq_len, action_size+1, action_size+1])
+        _, pre_actions, right_num = ner_model.forward_batch(fea_v, ac_v)  # loss torch.Size([1, seq_len, action_size+1, action_size+1])
+        for ac_golden, ac_pre in zip(ac_v.squeeze(0).data.tolist(), pre_actions):
+            num_entity_in_real, num_entity_in_pre, correct_entity = to_entity(ac_golden, ac_pre, idx2action)
+            total_correct_entity += correct_entity
+            total_entity_in_gold += num_entity_in_real
+            total_entity_in_pre += num_entity_in_pre
+            for idx in range(len(ac_pre)):
+                if ac_pre[idx] == ac_golden[idx]:
+                    correct += 1
+            total_act += len(ac_pre)
 
     acc = correct / float(total_act)
     if total_entity_in_pre > 0 :
@@ -61,7 +62,6 @@ def calc_f1_score(ner_model, dataset_loader, action2idx, if_cuda):
     return f1, pre, rec, acc
 
 def to_entity(real_action, predict_action, idx2action):
-
     flags = [False, False]
     entitys = [[],[]]
     actions = [real_action, predict_action]

@@ -29,6 +29,7 @@ if __name__ == "__main__":
     parser.add_argument('--train_file', default='../data/conll2003/train.txt', help='path to training file')
     parser.add_argument('--dev_file', default='../data/conll2003/dev.txt', help='path to development file')
     parser.add_argument('--test_file', default='../data/conll2003/test.txt', help='path to test file')
+    parser.add_argument('--batch_size', type=int, default=100, help='batch size (10)')
     parser.add_argument('--gpu', type=int, default=0, help='gpu id, set to -1 if use cpu mode')
     parser.add_argument('--unk', default='unk', help='unknow-token in pre-trained embedding')
     parser.add_argument('--checkpoint', default='./checkpoint/ner_', help='path to checkpoint prefix')
@@ -44,12 +45,13 @@ if __name__ == "__main__":
     parser.add_argument('--char_embedding_dim', type=int, default=50, help='dimension for char embedding')
     parser.add_argument('--action_embedding_dim', type=int, default=20, help='dimension for action embedding')
     parser.add_argument('--layers', type=int, choices=['1', '2'],  default=1, help='number of lstm layers')
-    parser.add_argument('--lr', type=float, default=0.01, help='initial learning rate')
+    parser.add_argument('--lr', type=float, default=0.001, help='initial learning rate')
     parser.add_argument('--singleton_rate', type=float, default=0.2, help='initial singleton rate')
-    parser.add_argument('--lr_decay', type=float, default=0.001, help='decay ratio of learning rate')
+    parser.add_argument('--lr_decay', type=float, default=0.75, help='decay ratio of learning rate')
     parser.add_argument('--load_check_point', default='', help='path of checkpoint')
     parser.add_argument('--load_opt', action='store_true', help='load optimizer from ')
-    parser.add_argument('--update', choices=['sgd', 'adam'], default='sgd', help='optimizer method')
+    parser.add_argument('--update', choices=['sgd', 'adam'], default='adam', help='optimizer method')
+    parser.add_argument('--mode', choices=['train', 'predict'], default='train', help='mode selection')
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum for sgd')
     parser.add_argument('--clip_grad', type=float, default=5.0, help='grad clip at')
     parser.add_argument('--mini_count', type=float, default=1, help='thresholds to replace rare words with <unk>')
@@ -62,6 +64,8 @@ if __name__ == "__main__":
 
     print('setting:')
     print(args)
+
+    if_cuda = True if args.gpu >= 0 else False
 
     # load corpus
     print('loading corpus')
@@ -128,13 +132,13 @@ if __name__ == "__main__":
     dev_dataset = utils.construct_dataset(dev_features, dev_labels, dev_actions, f_map, l_map, a_map, singleton, args.singleton_rate, args.caseless)
     test_dataset = utils.construct_dataset(test_features, test_labels, test_actions, f_map, l_map, a_map, singleton, args.singleton_rate, args.caseless)
 
-    dataset_loader = [torch.utils.data.DataLoader(dataset, shuffle=True, drop_last=False)]
-    dev_dataset_loader = [torch.utils.data.DataLoader(dev_dataset, shuffle=False, drop_last=False)]
-    test_dataset_loader = [torch.utils.data.DataLoader(test_dataset, shuffle=False, drop_last=False)]
+    dataset_loader = [torch.utils.data.DataLoader(tup, args.batch_size, shuffle=True, drop_last=False) for tup in dataset]
+    dev_dataset_loader = [torch.utils.data.DataLoader(tup, args.batch_size, shuffle=False, drop_last=False) for tup in dev_dataset]
+    test_dataset_loader = [torch.utils.data.DataLoader(tup, args.batch_size, shuffle=False, drop_last=False) for tup in test_dataset]
 
     # build model
     print('building model')
-    ner_model = TransitionNER(a_map, f_map, l_map, char_map, ner_map, len(f_map), len(a_map), args.embedding_dim, args.action_embedding_dim, args.char_embedding_dim, args.hidden, args.char_hidden, args.layers, args.drop_out,
+    ner_model = TransitionNER(args.mode, a_map, f_map, l_map, char_map, ner_map, len(f_map), len(a_map), args.embedding_dim, args.action_embedding_dim, args.char_embedding_dim, args.hidden, args.char_hidden, args.layers, args.drop_out,
                          args.spelling, args.char_structure, is_cuda=args.gpu)
 
     if args.load_check_point:
@@ -154,8 +158,7 @@ if __name__ == "__main__":
         optimizer.load_state_dict(checkpoint_file['optimizer'])
 
 
-    if args.gpu >= 0:
-        if_cuda = True
+    if if_cuda:
         print('device: ' + str(args.gpu))
         torch.cuda.set_device(args.gpu)
         ner_model.cuda()
@@ -181,7 +184,8 @@ if __name__ == "__main__":
 
             fea_v, la_v, ac_v = utils.repack_vb(if_cuda, feature, label, action)
             ner_model.zero_grad()  # zeroes the gradient of all parameters
-            loss, _, _ = ner_model.forward(fea_v, ac_v)
+            # loss, _, _ = ner_model.forward(fea_v, ac_v)
+            loss, _, _ = ner_model.forward_batch(fea_v, ac_v)
             loss.backward()
             nn.utils.clip_grad_norm(ner_model.parameters(), args.clip_grad)
             optimizer.step()
@@ -223,6 +227,8 @@ if __name__ == "__main__":
                         'optimizer': optimizer.state_dict(),
                         'f_map': f_map,
                         'l_map': l_map,
+                        'a_map': a_map,
+                        'ner_map': ner_map,
                     }, {'track_list': track_list,
                         'args': vars(args)
                         }, args.checkpoint + 'stack_lstm')
@@ -265,6 +271,8 @@ if __name__ == "__main__":
                         'optimizer': optimizer.state_dict(),
                         'f_map': f_map,
                         'l_map': l_map,
+                        'a_map': a_map,
+                        'ner_map': ner_map,
                     }, {'track_list': track_list,
                         'args': vars(args)
                         }, args.checkpoint + 'stack_lstm')

@@ -21,6 +21,8 @@ class TransitionDataset(Dataset):
 
     def __init__(self, data_tensor, label_tensor, action_tensor):
 
+        # print(data_tensor.size, label_tensor.size, action_tensor.size)
+        # assert data_tensor.size(0) == label_tensor.size(0)
         self.data_tensor = data_tensor
         self.label_tensor = label_tensor
         self.action_tensor = action_tensor
@@ -191,8 +193,11 @@ def generate_corpus(lines: object, word_count, if_shrink_feature: object = False
         feature_map['<unk>'] = 0
         #inserting eof
         feature_map['<eof>'] = len(feature_map)
+    action_map['<pad>'] = len(action_map)
+    label_map['<pad>'] = len(label_map)
 
     singleton = list()
+
     for k, v in word_count.items():
         if v == 1:
             singleton.append(k)
@@ -337,6 +342,16 @@ def load_embedding_wlm(emb_file, delimiter, feature_map, full_feature_set, casel
 
     return word_dict, embedding_tensor
 
+def calc_threshold_mean(features):
+
+    lines_len = list(map(lambda t: len(t) + 1, features))
+    average = int(sum(lines_len) / len(lines_len))
+    lower_line = list(filter(lambda t: t < average, lines_len))
+    upper_line = list(filter(lambda t: t >= average, lines_len))
+    lower_average = int(sum(lower_line) / len(lower_line))
+    upper_average = int(sum(upper_line) / len(upper_line))
+    max_len = max(lines_len)
+    return [lower_average, average, upper_average, max_len]
 
 
 def construct_dataset(input_features, input_label, input_action, word_dict, label_dict, action_dict, singleton, singleton_rate, caseless):
@@ -346,15 +361,21 @@ def construct_dataset(input_features, input_label, input_action, word_dict, labe
     features = encode_safe(input_features, word_dict, word_dict['<unk>'], singleton, singleton_rate)
     labels = encode(input_label, label_dict)
     actions = encode(input_action, action_dict)
-    feature_tensor = []
-    label_tensor = []
-    action_tensor =[]
-    for feature, label, action in zip(features, labels, actions):
-        feature_tensor.append(torch.LongTensor(feature))
-        label_tensor.append(torch.LongTensor(label))
-        action_tensor.append(torch.LongTensor(action))
+    thresholds = calc_threshold_mean(actions)
 
-    dataset = TransitionDataset(feature_tensor, label_tensor, action_tensor)
+    buckets = [[[], [], []] for _ in range(len(thresholds))]
+    for feature, label, action in zip(features, labels, actions):
+        cur_len = len(action)
+        cur_sent_len = len(feature)
+        idx = 0
+        cur_len_1 = cur_len + 1
+        while thresholds[idx] < cur_len_1:
+            idx += 1
+        buckets[idx][0].append(feature + [word_dict['<eof>']] * (thresholds[idx] - cur_sent_len))
+        buckets[idx][1].append(label + [label_dict['<pad>']] * (thresholds[idx] - cur_sent_len))
+        buckets[idx][2].append(action + [action_dict['<pad>']] * (thresholds[idx] - cur_len))
+
+    dataset = [TransitionDataset(torch.LongTensor(bucket[0]), torch.LongTensor(bucket[1]), torch.LongTensor(bucket[2])) for bucket in buckets]
 
     return dataset
 
@@ -433,9 +454,9 @@ def init_lstm_cell(input_lstm):
 def repack_vb(if_cuda, feature, label, action):
 
     if if_cuda:
-        fea_v = torch.autograd.Variable(feature).cuda()  
-        label_v = torch.autograd.Variable(label).cuda() 
-        action_v = torch.autograd.Variable(action).cuda()  
+        fea_v = torch.autograd.Variable(feature).cuda()  # feature: torch.Size([4, 17]) fea_v: torch.Size([17, 4])
+        label_v = torch.autograd.Variable(label).cuda()  # torch.Size([17, 4, 1])
+        action_v = torch.autograd.Variable(action).cuda()  # torch.Size([17, 4])
     else:
         fea_v = torch.autograd.Variable(feature)
         label_v = torch.autograd.Variable(label).contiguous()
