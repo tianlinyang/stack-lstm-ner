@@ -128,6 +128,7 @@ class TransitionNER(nn.Module):
         self.entity_forward_lstm = nn.LSTMCell(self.tok_embedding_dim, hidden_dim)
         self.entity_backward_lstm = nn.LSTMCell(self.tok_embedding_dim, hidden_dim)
 
+        self.ac_lstm = nn.LSTM(action_embedding_dim, hidden_dim, num_layers=rnn_layers, bidirectional=False, dropout=dropout_ratio)
         self.lstm = nn.LSTM(self.tok_embedding_dim, hidden_dim, num_layers=rnn_layers, bidirectional=False,
                                     dropout=dropout_ratio)
         self.rnn_layers = rnn_layers
@@ -355,7 +356,8 @@ class TransitionNER(nn.Module):
         if self.mode == 'train':
             action_embeds = self.dropout_e(self.action_embeds(actions))
             relation_embeds = self.dropout_e(self.relation_embeds(actions))
-
+            action_output, _ = self.ac_lstm(action_embeds.transpose(0, 1))
+            action_output = action_output.transpose(0, 1)
 
         lstm_initial = (utils.xavier_init(self.gpu_triger, 1, self.hidden_dim), utils.xavier_init(self.gpu_triger, 1, self.hidden_dim))
         buffer = [[] for i in range(self.batch_size)]
@@ -363,10 +365,11 @@ class TransitionNER(nn.Module):
         right = [0 for i in range(self.batch_size)]
         predict_actions = [[] for i in range(self.batch_size)]
         stack = [StackRNN(self.stack_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
-        action = [StackRNN(self.action_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
         output = [StackRNN(self.output_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
         ent_f = [StackRNN(self.entity_forward_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
         ent_b = [StackRNN(self.entity_backward_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
+        if self.mode == 'predict':
+            action = [StackRNN(self.action_lstm, lstm_initial, self.dropout, self._rnn_get_output, self.empty_emb) for i in range(self.batch_size)]
         sentence_array = sentences.data.cpu().numpy()
         sents_len = []
         token_embedds = None
@@ -429,9 +432,20 @@ class TransitionNER(nn.Module):
                 valid_actions = self.get_possible_actions(stack[batch_idx], buffer[batch_idx])
                 log_probs = None
                 if len(valid_actions) > 1:
+                    if self.mode == 'train':
+                        if action_count == 0:
+                            lstms_output = torch.cat(
+                                [buffer[batch_idx][-1][0], stack[batch_idx].embedding(), output[batch_idx].embedding(),
+                                 lstm_initial[0]], 1)
+                        else:
+                            lstms_output = torch.cat(
+                                [buffer[batch_idx][-1][0], stack[batch_idx].embedding(), output[batch_idx].embedding(),
+                                 action_output[batch_idx][action_count-1].unsqueeze(0)], 1)
+                    elif self.mode == 'predict':
+                        lstms_output = torch.cat(
+                            [buffer[batch_idx][-1][0], stack[batch_idx].embedding(), output[batch_idx].embedding(),
+                             action[batch_idx].embedding(),], 1)
 
-                    lstms_output = torch.cat(
-                        [buffer[batch_idx][-1][0], stack[batch_idx].embedding(), output[batch_idx].embedding(), action[batch_idx].embedding()], 1)
                     hidden_output = torch.tanh(self.lstms_output_2_softmax(self.dropout(lstms_output)))
                     if self.gpu_triger is True:
                         logits = self.output_2_act(hidden_output)[0][
@@ -450,7 +464,6 @@ class TransitionNER(nn.Module):
 
                 if self.mode == 'train':
                     real_action = self.idx2action[actions.data[batch_idx][action_count]]
-                    act_embedding = action_embeds[batch_idx][action_count].unsqueeze(0)
                     rel_embedding = relation_embeds[batch_idx][action_count].unsqueeze(0)
                 elif self.mode == 'predict':
                     real_action = self.idx2action[action_predict]
@@ -459,10 +472,10 @@ class TransitionNER(nn.Module):
                     relation_embeds = self.dropout_e(self.relation_embeds(action_predict_tensor))
                     act_embedding = action_embeds[0].unsqueeze(0)
                     rel_embedding = relation_embeds[0].unsqueeze(0)
+                    action[batch_idx].push(act_embedding, (act_embedding, real_action))
 
                 if real_action == self.idx2action[action_predict]:
                     right[batch_idx] += 1
-                action[batch_idx].push(act_embedding, (act_embedding, real_action))
                 if real_action.startswith('S'):
                     assert len(buffer[batch_idx]) > 0
                     _, tok_buffer_embedding, buffer_token = buffer[batch_idx].pop()
