@@ -36,7 +36,7 @@ class TransitionDataset(Dataset):
 
 zip = getattr(itertools, 'izip', zip)
 
-def varible(tensor, gpu):
+def variable(tensor, gpu):
     if gpu:
         return torch.autograd.Variable(tensor).cuda()
     else:
@@ -44,11 +44,11 @@ def varible(tensor, gpu):
 
 
 def xavier_init(gpu, *size):
-    return nn.init.xavier_normal(varible(torch.FloatTensor(*size), gpu))
+    return nn.init.xavier_normal(variable(torch.FloatTensor(*size), gpu))
 
 
 def init_varaible_zero(gpu, *size):
-    return varible(torch.zeros(*size),gpu)
+    return variable(torch.zeros(*size),gpu)
 
 def to_scalar(var):
 
@@ -77,17 +77,20 @@ def encode2char_safe(input_lines, char_dict):
 
 
 def encode_safe(input_lines, word_dict, unk, singleton, singleton_rate):
-    lines = list()
-    for sentence in input_lines:
-        line = list()
-        for word in sentence:
-            if word in singleton and torch.rand(1).numpy()[0] < singleton_rate:
-                line.append(unk)
-            elif word in word_dict:
-                line.append(word_dict[word])
-            else:
-                line.append(unk)
-        lines.append(line)
+    if singleton_rate > 0:
+        lines = list()
+        for sentence in input_lines:
+            line = list()
+            for word in sentence:
+                if word in singleton and torch.rand(1).numpy()[0] < singleton_rate:
+                    line.append(unk)
+                elif word in word_dict:
+                    line.append(word_dict[word])
+                else:
+                    line.append(unk)
+            lines.append(line)
+    else:
+        lines = list(map(lambda t: list(map(lambda m: word_dict.get(m, unk), t)), input_lines))
     return lines
 
 def encode_safe_predict(input_lines, word_dict, unk):
@@ -114,10 +117,13 @@ def shrink_features(feature_map, features, thresholds):
     feature_map['<eof>'] = len(feature_map)
     return feature_map
 
-def generate_corpus(lines: object, word_count, if_shrink_feature: object = False, thresholds: object = 1) -> object:
+def generate_corpus(lines: object, word_count, use_spelling, if_shrink_feature: object = False, thresholds: object = 1) -> object:
 
     feature_map = dict()
-    char_map = {"<start>": 0, "<end>": 1}
+    if use_spelling:
+        char_map = {"<start>": 0, "<end>": 1, "<pad>": 2, "<unk>": 3}
+    else:
+        char_map = None
     label_map = dict()
     action_map = {"OUT": 0, "SHIFT": 1}
     ner_map =dict()
@@ -139,9 +145,10 @@ def generate_corpus(lines: object, word_count, if_shrink_feature: object = False
                 word_count[line[0]] += 1
             else:
                 word_count[line[0]] = 1
-            for char_idx in range(len(line[0])):
-                if line[0][char_idx] not in char_map:
-                    char_map[line[0][char_idx]] = len(char_map)
+            if use_spelling:
+                for char_idx in range(len(line[0])):
+                    if line[0][char_idx] not in char_map:
+                        char_map[line[0][char_idx]] = len(char_map)
             tmp_ll.append(line[-1])
 
             if line[0] not in feature_map:
@@ -202,7 +209,7 @@ def generate_corpus(lines: object, word_count, if_shrink_feature: object = False
         if v == 1:
             singleton.append(k)
 
-    return features, labels, actions, feature_map, label_map, action_map, char_map, ner_map, singleton
+    return features, labels, actions, feature_map, label_map, action_map, ner_map, singleton, char_map
 
 
 def read_corpus_ner(lines, word_count):
@@ -409,8 +416,7 @@ def init_embedding(input_embedding):
 
 def init_linear(input_linear):
 
-    bias = np.sqrt(6.0 / (input_linear.weight.size(0) + input_linear.weight.size(1)))
-    nn.init.uniform(input_linear.weight, -bias, bias)
+    nn.init.orthogonal(input_linear.weight)
     if input_linear.bias is not None:
         input_linear.bias.data.zero_()
 
@@ -418,11 +424,9 @@ def init_lstm(input_lstm):
 
     for ind in range(0, input_lstm.num_layers):
         weight = eval('input_lstm.weight_ih_l'+str(ind))
-        bias = np.sqrt(6.0 / (weight.size(0)/4 + weight.size(1)))
-        nn.init.uniform(weight, -bias, bias)
+        nn.init.orthogonal(weight)
         weight = eval('input_lstm.weight_hh_l'+str(ind))
-        bias = np.sqrt(6.0 / (weight.size(0)/4 + weight.size(1)))
-        nn.init.uniform(weight, -bias, bias)
+        nn.init.orthogonal(weight)
     
     if input_lstm.bias:
         for ind in range(0, input_lstm.num_layers):
@@ -462,3 +466,11 @@ def repack_vb(if_cuda, feature, label, action):
         label_v = torch.autograd.Variable(label).contiguous()
         action_v = torch.autograd.Variable(action).contiguous()
     return fea_v, label_v, action_v
+
+def generate_char(char2idx, train_features, dev_features, test_features):
+
+    dev_char = [[[char2idx[c] for c in word] for word in sent] for sent in dev_features]
+    test_char = [[[char2idx[c] for c in word] for word in sent] for sent in test_features]
+    train_char = [[[char2idx[c] for c in word] for word in sent] for sent in train_features]
+
+    return train_char, dev_char, test_char

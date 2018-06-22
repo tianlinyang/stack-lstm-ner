@@ -1,19 +1,13 @@
 from __future__ import print_function
-import datetime
 import time
-import torch
-import torch.autograd as autograd
-import torch.nn as nn
 import torch.optim as optim
 import codecs
-from model.stack_lstm import *
+# from model.stack_lstm import *
+from model.batch_stack_lstm import *
 import model.utils as utils
 import model.evaluate as evaluate
-import logging.handlers
-import math
 
 import argparse
-import json
 import os
 import sys
 from tqdm import tqdm
@@ -23,12 +17,13 @@ import functools
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Training transition-based NER system')
+    parser.add_argument('--batch', action='store_true')
     parser.add_argument('--rand_embedding', action='store_true', help='random initialize word embedding')
-    parser.add_argument('--emb_file', default='../embedding/sskip.100.vectors',
+    parser.add_argument('--emb_file', default='embedding/sskip.100.vectors',
                         help='path to pre-trained embedding')
-    parser.add_argument('--train_file', default='../data/conll2003/train.txt', help='path to training file')
-    parser.add_argument('--dev_file', default='../data/conll2003/dev.txt', help='path to development file')
-    parser.add_argument('--test_file', default='../data/conll2003/test.txt', help='path to test file')
+    parser.add_argument('--train_file', default='data/conll2003/train.txt', help='path to training file')
+    parser.add_argument('--dev_file', default='data/conll2003/dev.txt', help='path to development file')
+    parser.add_argument('--test_file', default='data/conll2003/test.txt', help='path to test file')
     parser.add_argument('--batch_size', type=int, default=100, help='batch size (10)')
     parser.add_argument('--gpu', type=int, default=0, help='gpu id, set to -1 if use cpu mode')
     parser.add_argument('--unk', default='unk', help='unknow-token in pre-trained embedding')
@@ -44,7 +39,7 @@ if __name__ == "__main__":
     parser.add_argument('--embedding_dim', type=int, default=100, help='dimension for word embedding')
     parser.add_argument('--char_embedding_dim', type=int, default=50, help='dimension for char embedding')
     parser.add_argument('--action_embedding_dim', type=int, default=20, help='dimension for action embedding')
-    parser.add_argument('--layers', type=int, choices=['1', '2'],  default=1, help='number of lstm layers')
+    parser.add_argument('--layers', type=int,  default=1, help='number of lstm layers')
     parser.add_argument('--lr', type=float, default=0.001, help='initial learning rate')
     parser.add_argument('--singleton_rate', type=float, default=0.2, help='initial singleton rate')
     parser.add_argument('--lr_decay', type=float, default=0.75, help='decay ratio of learning rate')
@@ -64,6 +59,11 @@ if __name__ == "__main__":
 
     print('setting:')
     print(args)
+
+    date = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    args.checkpoint = args.checkpoint + date.split(' ')[0]
+    if not os.path.exists(args.checkpoint):
+        os.makedirs(args.checkpoint)
 
     if_cuda = True if args.gpu >= 0 else False
 
@@ -89,17 +89,20 @@ if __name__ == "__main__":
             args.start_epoch = checkpoint_file['epoch']
             f_map = checkpoint_file['f_map']
             l_map = checkpoint_file['l_map']
-            train_features, train_labels, train_actions = utils.read_corpus_ner(lines)
+            a_map = checkpoint_file['a_map']
+            ner_map = checkpoint_file['ner_map']
+            char_map = checkpoint_file['char_map']
+            singleton = checkpoint_file['singleton']
+            train_features, train_labels, train_actions, word_count = utils.read_corpus_ner(lines, word_count)
         else:
             print("no checkpoint found at: '{}'".format(args.load_check_point))
     else:
         print('constructing coding table')
 
-        train_features, train_labels, train_actions, f_map, l_map, a_map, char_map, ner_map, singleton = utils.generate_corpus(lines, word_count,
+        train_features, train_labels, train_actions, f_map, l_map, a_map, ner_map, singleton, char_map = utils.generate_corpus(lines, word_count, args.spelling,
                                                                                                 if_shrink_feature=True,
                                                                                                 thresholds=0)
         f_set = {v for v in f_map}
-        f_map = utils.shrink_features(f_map, train_features, args.mini_count)
 
         dt_f_set = functools.reduce(lambda x, y: x | y, map(lambda t: set(t), dev_features),
                                     f_set)  # Add word in dev and in test into feature_map
@@ -157,11 +160,13 @@ if __name__ == "__main__":
     if args.load_check_point and args.load_opt:
         optimizer.load_state_dict(checkpoint_file['optimizer'])
 
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=args.lr_decay, patience=0,
+                                                           verbose=True)
 
     if if_cuda:
         print('device: ' + str(args.gpu))
         torch.cuda.set_device(args.gpu)
-        ner_model.cuda()
+        ner_model.cuda(device=args.gpu)
     else:
         if_cuda = False
 
@@ -185,107 +190,66 @@ if __name__ == "__main__":
             fea_v, la_v, ac_v = utils.repack_vb(if_cuda, feature, label, action)
             ner_model.zero_grad()  # zeroes the gradient of all parameters
             # loss, _, _ = ner_model.forward(fea_v, ac_v)
-            loss, _, _ = ner_model.forward_batch(fea_v, ac_v)
+            loss, _ = ner_model.forward(fea_v, ac_v)
             loss.backward()
             nn.utils.clip_grad_norm(ner_model.parameters(), args.clip_grad)
             optimizer.step()
             epoch_loss += utils.to_scalar(loss)
 
         # update lr
-        utils.adjust_learning_rate(optimizer, args.lr / (1 + (args.start_epoch + 1) * args.lr_decay))
+        scheduler.step(epoch_loss)
+        dev_f1, dev_pre, dev_rec = evaluate.calc_f1_score(ner_model, dev_dataset_loader, a_map, if_cuda)
 
-        if 'f' in args.eva_matrix:
-            dev_f1, dev_pre, dev_rec, dev_acc = evaluate.calc_f1_score(ner_model, dev_dataset_loader, a_map, if_cuda)
-
-            if dev_f1 > best_f1:
-                patience_count = 0
-                best_f1 = dev_f1
-
-                test_f1, test_pre, test_rec, test_acc = evaluate.calc_f1_score(ner_model, test_dataset_loader, a_map, if_cuda)
-
-                track_list.append(
-                    {'loss': epoch_loss, 'dev_f1': dev_f1, 'dev_acc': dev_acc, 'test_f1': test_f1,
-                     'test_acc': test_acc})
-
-                print(
-                    '(loss: %.4f, epoch: %d, dev F1 = %.4f, dev pre = %.4f, dev rec = %.4f, dev acc = %.4f, F1 on test = %.4f, pre on test = %.4f, rec on test = %.4f, acc on test= %.4f), saving...' %
-                    (epoch_loss,
-                     args.start_epoch,
-                     dev_f1,
-                     dev_pre,
-                     dev_rec,
-                     dev_acc,
-                     test_f1,
-                     test_pre,
-                     test_rec,
-                     test_acc))
-
+        if dev_f1 > best_f1:
+            patience_count = 0
+            if epoch_idx > 0:
                 try:
-                    utils.save_checkpoint({
-                        'epoch': args.start_epoch,
-                        'state_dict': ner_model.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'f_map': f_map,
-                        'l_map': l_map,
-                        'a_map': a_map,
-                        'ner_map': ner_map,
-                    }, {'track_list': track_list,
-                        'args': vars(args)
-                        }, args.checkpoint + 'stack_lstm')
+                    os.remove(args.checkpoint + '/dev=' + str(best_f1) + '.json')
+                    os.remove(args.checkpoint + '/dev=' + str(best_f1) + '.model')
                 except Exception as inst:
                     print(inst)
 
-            else:
-                patience_count += 1
-                print('(loss: %.4f, epoch: %d, dev F1 = %.4f, dev acc = %.4f)' %
-                      (epoch_loss,
-                       args.start_epoch,
-                       dev_f1,
-                       dev_acc))
-                track_list.append({'loss': epoch_loss, 'dev_f1': dev_f1, 'dev_acc': dev_acc})
+            best_f1 = dev_f1
+            test_f1, test_pre, test_rec = evaluate.calc_f1_score(ner_model, test_dataset_loader, a_map, if_cuda)
+
+            track_list.append(
+                {'loss': epoch_loss, 'dev_f1': dev_f1, 'test_f1': test_f1})
+
+            print(
+                '(loss: %.4f, epoch: %d, dev F1 = %.4f, dev pre = %.4f, dev rec = %.4f, F1 on test = %.4f, pre on test = %.4f, rec on test = %.4f), saving...' %
+                (epoch_loss,
+                 args.start_epoch,
+                 dev_f1,
+                 dev_pre,
+                 dev_rec,
+                 test_f1,
+                 test_pre,
+                 test_rec))
+
+            try:
+                utils.save_checkpoint({
+                    'epoch': args.start_epoch,
+                    'state_dict': ner_model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'f_map': f_map,
+                    'l_map': l_map,
+                    'a_map': a_map,
+                    'ner_map': ner_map,
+                    'char_map': char_map,
+                    'singleton': singleton
+                }, {'track_list': track_list,
+                    'args': vars(args)
+                    }, args.checkpoint + '/dev=' + str(round(best_f1*100,2)))
+            except Exception as inst:
+                print(inst)
 
         else:
-
-            dev_acc = evaluate.calc_score(ner_model, dev_dataset_loader, if_cuda)
-
-            if dev_acc > best_acc:
-                patience_count = 0
-                best_acc = dev_acc
-
-                test_acc = evaluate.calc_score(ner_model, test_dataset_loader, if_cuda)
-
-                track_list.append(
-                    {'loss': epoch_loss, 'dev_acc': dev_acc, 'test_acc': test_acc})
-
-                print(
-                    '(loss: %.4f, epoch: %d, dev acc = %.4f, acc on test= %.4f), saving...' %
-                    (epoch_loss,
-                     args.start_epoch,
-                     dev_acc,
-                     test_acc))
-
-                try:
-                    utils.save_checkpoint({
-                        'epoch': args.start_epoch,
-                        'state_dict': ner_model.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'f_map': f_map,
-                        'l_map': l_map,
-                        'a_map': a_map,
-                        'ner_map': ner_map,
-                    }, {'track_list': track_list,
-                        'args': vars(args)
-                        }, args.checkpoint + 'stack_lstm')
-                except Exception as inst:
-                    print(inst)
-
-            else:
-                patience_count += 1
-                print('(loss: %.4f, epoch: %d, dev acc = %.4f)' %
-                      (epoch_loss,
-                       args.start_epoch,
-                       dev_acc))
-                track_list.append({'loss': epoch_loss, 'dev_acc': dev_acc})
+            patience_count += 1
+            print('(loss: %.4f, epoch: %d, dev F1 = %.4f)' %
+                  (epoch_loss,
+                   args.start_epoch,
+                   dev_f1))
+            track_list.append({'loss': epoch_loss, 'dev_f1': dev_f1})
 
         print('epoch: ' + str(args.start_epoch) + '\t in ' + str(args.epoch) + ' take: ' + str(
             time.time() - start_time) + ' s')
@@ -294,12 +258,9 @@ if __name__ == "__main__":
             break
 
     # print best
-    if 'f' in args.eva_matrix:
-        print(
-            args.checkpoint + ' dev_f1: %.4f dev_rec: %.4f dev_pre: %.4f dev_acc: %.4f test_f1: %.4f test_rec: %.4f test_pre: %.4f test_acc: %.4f\n' % (
-            dev_f1, dev_rec, dev_pre, dev_acc, test_f1, test_rec, test_pre, test_acc))
-    else:
-        print(args.checkpoint + ' dev_acc: %.4f test_acc: %.4f\n' % (dev_acc, test_acc))
+    print(
+        args.checkpoint + ' dev_f1: %.4f dev_rec: %.4f dev_pre: %.4f test_f1: %.4f test_rec: %.4f test_pre: %.4f\n' % (
+        dev_f1, dev_rec, dev_pre, test_f1, test_rec, test_pre))
 
     # printing summary
     print('setting:')

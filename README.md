@@ -57,11 +57,33 @@ York I-LOC
 
 ### Training
 
-Train the model with:
+To train the model, run ```train.py``` with the following parameters:
+```
+--rand_embedding      # use this if you want to randomly initialize the embeddings
+--emb_file           # file dir for word embedding
+--char_structure        # choose 'lstm' or 'cnn'
+--train_file		  # path to training file
+--dev_file		  	  # path to development file
+--test_file		  	  # path to test file
+--gpu 				  # gpu id, set to -1 if use cpu mode
+--update              # choose from 'sgd' or adam
+--batch_size  		  # batch size, default=100
+--singleton_rate        # the rate for changing the words with low frequency to '<unk>'
+--checkpoint 		  # path to checkpoint and saved model
+```
+### Decoding
 
+To tag a raw file, simpliy run ```predict.py``` with the following parameters:
 ```
-python train.py
+--load_arg            # path to saved json file with all args
+--load_check_point    # path to saved model
+--test_file           # path to test file
+--test_file_out         # path to test file output
+--batch_size            # batch size
+--gpu                   # gpu id, set to -1 if use cpu mode
 ```
+Please be aware that when using the model in ```stack_lstm.py```, ```--batch_size``` must be 1.
+
 ### Result
 
 When models are only trained on the CoNLL 2003 English NER dataset, the results are summarized as below.
@@ -71,9 +93,9 @@ When models are only trained on the CoNLL 2003 English NER dataset, the results 
 | [Lample et al. 2016](https://github.com/clab/stack-lstm-ner) | pretrain | 86.67 |  
 | | pretrain + dropout | 87.96 | 
 | | pretrain + dropout + char | 90.33 | 
-| Our Implementation | pretrain + dropout | 90.43 | |
-| |  pretrain + dropout + char (BiLSTM) | 91.09 | |
-| |  pretrain + dropout + char (CNN) | 90.97 | |
+| Our Implementation | pretrain + dropout |  | |
+| |  pretrain + dropout + char (BiLSTM) |  | |
+| |  pretrain + dropout + char (CNN) |  | |
 
 ### Author
  Huimeng Zhang: zhang_huimeng@foxmail.com
